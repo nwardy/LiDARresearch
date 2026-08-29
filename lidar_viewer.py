@@ -1,24 +1,12 @@
 #!/usr/bin/env python3
-"""
-Real-time point-cloud field viewer for the LDROBOT D800 (STL-27L) 360 LiDAR.
-
-Dark-themed, dependency-light (pyserial + pygame only). Parses the standard
-LDROBOT LD-series UART packet format and renders a live top-down scan field.
-
-Usage:
-    python lidar_viewer.py --port /dev/ttyUSB0            # real device
-    python lidar_viewer.py --port COM5 --baud 921600
-    python lidar_viewer.py --demo                         # no hardware needed
-
-Controls:
-    mouse wheel / + -   zoom
-    left-drag / arrows  pan
-    C                   cycle color mode (distance / intensity / mono)
-    G                   toggle range-ring grid
-    P                   pause rendering
-    R                   reset view
-    ESC / Q             quit
-"""
+# Live viewer for the LDROBOT D800 (STL-27L) 360 lidar.
+# Reads the serial packets, draws the scan top-down with pygame.
+#
+#   python lidar_viewer.py --port /dev/ttyUSB0
+#   python lidar_viewer.py --port COM5 --baud 921600
+#   python lidar_viewer.py --demo
+#
+# keys: wheel/+/- zoom, drag/arrows pan, C color, G grid, P pause, R reset, Q quit
 
 import argparse
 import math
@@ -28,16 +16,15 @@ import threading
 import time
 from collections import deque
 
-# --- LDROBOT LD-series packet layout -----------------------------------------
-HEADER = 0x54       # every packet starts with this
-VER_LEN = 0x2C      # version/length byte: 12 measurement points per packet
+HEADER = 0x54
+VER_LEN = 0x2C
 POINTS_PER_PACKET = 12
-PACKET_LEN = 47     # 1+1+2+2 + 12*3 + 2+2+1
-DEFAULT_BAUD = 921600  # STL-27L / D800 default; LD06/LD19 use 230400
+PACKET_LEN = 47
+DEFAULT_BAUD = 921600  # D800/STL-27L. LD06 and LD19 use 230400.
 
 
 def build_crc_table():
-    """LDROBOT CRC-8: MSB-first, polynomial 0x4D, init 0, no reflection."""
+    # LDROBOT crc8, poly 0x4D, msb first, init 0
     table = []
     for i in range(256):
         c = i
@@ -58,16 +45,13 @@ def crc8(data):
 
 
 def parse_packet(buf):
-    """Decode one 47-byte packet -> (rpm, [(angle_deg, dist_mm, intensity), ...]).
-
-    Returns None if the CRC check fails.
-    """
+    # returns (rpm, [(angle_deg, dist_mm, intensity), ...]) or None on bad crc
     if crc8(buf[:PACKET_LEN - 1]) != buf[PACKET_LEN - 1]:
         return None
 
-    speed = struct.unpack_from("<H", buf, 2)[0]        # deg / second
-    start = struct.unpack_from("<H", buf, 4)[0]        # 0.01 deg
-    end = struct.unpack_from("<H", buf, 42)[0]         # 0.01 deg
+    speed = struct.unpack_from("<H", buf, 2)[0]   # deg per second
+    start = struct.unpack_from("<H", buf, 4)[0]   # 0.01 deg
+    end = struct.unpack_from("<H", buf, 42)[0]
 
     diff = (end - start) % 36000
     step = diff / (POINTS_PER_PACKET - 1) if POINTS_PER_PACKET > 1 else 0
@@ -75,24 +59,21 @@ def parse_packet(buf):
     pts = []
     for i in range(POINTS_PER_PACKET):
         off = 6 + i * 3
-        dist = struct.unpack_from("<H", buf, off)[0]   # mm
+        dist = struct.unpack_from("<H", buf, off)[0]
         intensity = buf[off + 2]
-        angle = ((start + step * i) % 36000) / 100.0    # degrees
+        angle = ((start + step * i) % 36000) / 100.0
         pts.append((angle, dist, intensity))
 
-    rpm = speed / 6.0  # deg/s -> rpm
-    return rpm, pts
+    return speed / 6.0, pts
 
 
-# --- Shared scan field -------------------------------------------------------
 class ScanField:
-    """Latest distance per 0.1-degree bin, updated in place from any source."""
-
+    # holds the latest distance for each 0.1 degree bin
     BINS = 3600
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._dist = [0] * self.BINS       # mm, 0 == no return
+        self._dist = [0] * self.BINS
         self._inten = [0] * self.BINS
         self.rpm = 0.0
         self.packets = 0
@@ -110,7 +91,6 @@ class ScanField:
             self.packets += 1
 
     def snapshot(self):
-        """Return list of (angle_deg, dist_mm, intensity) for valid bins."""
         with self._lock:
             out = []
             for b in range(self.BINS):
@@ -120,10 +100,7 @@ class ScanField:
             return out, self.rpm
 
 
-# --- Data sources ------------------------------------------------------------
 class SerialSource(threading.Thread):
-    """Reads the LiDAR serial stream, syncs on the header, feeds ScanField."""
-
     def __init__(self, field, port, baud):
         super().__init__(daemon=True)
         self.field = field
@@ -134,14 +111,14 @@ class SerialSource(threading.Thread):
 
     def run(self):
         try:
-            import serial  # pyserial
+            import serial
         except ImportError:
-            print("pyserial not installed. Run: pip install pyserial", file=sys.stderr)
+            print("pyserial not installed. run: pip install pyserial", file=sys.stderr)
             return
         try:
             ser = serial.Serial(self.port, self.baud, timeout=1)
-        except Exception as e:  # noqa: BLE001
-            print(f"Could not open {self.port}: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"could not open {self.port}: {e}", file=sys.stderr)
             return
 
         buf = bytearray()
@@ -151,7 +128,6 @@ class SerialSource(threading.Thread):
                 continue
             buf.extend(chunk)
 
-            # Scan the buffer for valid header pairs and parse full packets.
             i = 0
             while i + PACKET_LEN <= len(buf):
                 if buf[i] == HEADER and buf[i + 1] == VER_LEN:
@@ -171,9 +147,8 @@ class SerialSource(threading.Thread):
 
 
 class DemoSource(threading.Thread):
-    """Synthetic room so the viewer runs without hardware (--demo)."""
-
-    WALLS = (3000, 2200)  # half-extents in mm (x, y)
+    # fake room so the viewer runs without the sensor plugged in
+    WALLS = (3000, 2200)
     OBSTACLES = ((1200, -600, 350), (-1500, 900, 500), (400, 1400, 250))
 
     def __init__(self, field):
@@ -185,7 +160,6 @@ class DemoSource(threading.Thread):
     def _ray(self, theta):
         dx, dy = math.cos(theta), math.sin(theta)
         best = 1e9
-        # axis-aligned box walls (ray from origin)
         xh, yh = self.WALLS
         if dx > 1e-9:
             best = min(best, xh / dx)
@@ -195,7 +169,6 @@ class DemoSource(threading.Thread):
             best = min(best, yh / dy)
         elif dy < -1e-9:
             best = min(best, -yh / dy)
-        # circular obstacles
         for cx, cy, r in self.OBSTACLES:
             b = -(dx * cx + dy * cy)
             c = cx * cx + cy * cy - r * r
@@ -204,7 +177,6 @@ class DemoSource(threading.Thread):
                 t = -b - math.sqrt(disc)
                 if 0 < t < best:
                     best = t
-        # deterministic jitter (no RNG import needed)
         best += math.sin(theta * 53.0) * 8.0
         return max(0.0, best)
 
@@ -224,7 +196,6 @@ class DemoSource(threading.Thread):
         self.running = False
 
 
-# --- Rendering ---------------------------------------------------------------
 BG = (9, 11, 15)
 GRID = (30, 36, 46)
 GRID_TXT = (70, 82, 100)
@@ -245,7 +216,7 @@ def color_for(dist, inten, max_range, mode):
     if mode == "intensity":
         t = min(1.0, inten / 255.0)
         return lerp((40, 60, 120), (0, 255, 190), t)
-    t = min(1.0, dist / max_range)  # near -> cyan/green, far -> deep blue
+    t = min(1.0, dist / max_range)
     return lerp((0, 255, 180), (40, 80, 210), t)
 
 
@@ -253,14 +224,13 @@ def run_viewer(field, args, source):
     import pygame
 
     pygame.init()
-    pygame.display.set_caption("D800 LiDAR - point cloud field")
-    flags = pygame.RESIZABLE
-    screen = pygame.display.set_mode((args.width, args.height), flags)
+    pygame.display.set_caption("D800 lidar")
+    screen = pygame.display.set_mode((args.width, args.height), pygame.RESIZABLE)
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("menlo,consolas,monospace", 13)
     big = pygame.font.SysFont("menlo,consolas,monospace", 15, bold=True)
 
-    max_range = args.max_range * 1000.0  # m -> mm
+    max_range = args.max_range * 1000.0
     zoom = 1.0
     pan = [0.0, 0.0]
     dragging = False
@@ -270,7 +240,7 @@ def run_viewer(field, args, source):
     color_mode = 0
 
     frame_times = deque(maxlen=30)
-    frozen = None  # last snapshot kept while paused
+    frozen = None
 
     def base_scale(w, h):
         return (min(w, h) / 2 - 40) / max_range
@@ -323,21 +293,18 @@ def run_viewer(field, args, source):
         zoom = max(0.1, min(zoom, 40.0))
         screen.fill(BG)
 
-        # range-ring grid
         if show_grid:
-            step_m = 1
-            r = step_m
+            r = 1
             while r * 1000 <= max_range:
                 rr = int(r * 1000 * scale)
                 if rr > 6:
                     pygame.draw.circle(screen, GRID, (int(cx), int(cy)), rr, 1)
                     label = font.render(f"{r}m", True, GRID_TXT)
                     screen.blit(label, (int(cx) + 3, int(cy) - rr - 2))
-                r += step_m
+                r += 1
             pygame.draw.line(screen, GRID, (0, int(cy)), (w, int(cy)), 1)
             pygame.draw.line(screen, GRID, (int(cx), 0), (int(cx), h), 1)
 
-        # point field (freeze the last snapshot while paused)
         if paused and frozen is not None:
             pts, rpm = frozen
         else:
@@ -356,10 +323,8 @@ def run_viewer(field, args, source):
                             (int(x), int(y), 2, 2))
                 drawn += 1
 
-        # sensor marker
         pygame.draw.circle(screen, SENSOR, (int(cx), int(cy)), 4)
 
-        # HUD
         frame_times.append(time.time())
         fps = 0.0
         if len(frame_times) > 1:
@@ -367,7 +332,7 @@ def run_viewer(field, args, source):
 
         title = "DEMO" if isinstance(source, DemoSource) else args.port
         lines = [
-            (big, f"D800 LiDAR  [{title}]", ACCENT),
+            (big, f"D800 lidar  [{title}]", ACCENT),
             (font, f"points   {drawn}", HUD),
             (font, f"rpm      {rpm:6.1f}", HUD),
             (font, f"fps      {fps:5.1f}", HUD),
@@ -378,15 +343,15 @@ def run_viewer(field, args, source):
         if isinstance(source, SerialSource) and source.crc_errors:
             lines.append((font, f"crc err  {source.crc_errors}", (200, 120, 90)))
         if paused:
-            lines.append((font, "-- PAUSED --", (240, 200, 90)))
+            lines.append((font, "-- paused --", (240, 200, 90)))
 
         y = 10
         for fnt, text, col in lines:
             screen.blit(fnt.render(text, True, col), (12, y))
             y += fnt.get_height() + 2
 
-        help_txt = "wheel zoom  drag pan  C color  G grid  P pause  R reset  Q quit"
-        screen.blit(font.render(help_txt, True, GRID_TXT), (12, h - 22))
+        keys = "wheel zoom  drag pan  C color  G grid  P pause  R reset  Q quit"
+        screen.blit(font.render(keys, True, GRID_TXT), (12, h - 22))
 
         pygame.display.flip()
         clock.tick(args.fps)
@@ -396,18 +361,18 @@ def run_viewer(field, args, source):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="LDROBOT D800 real-time point-cloud viewer")
+    ap = argparse.ArgumentParser()
     ap.add_argument("--port", help="serial port, e.g. /dev/ttyUSB0 or COM5")
-    ap.add_argument("--baud", type=int, default=DEFAULT_BAUD, help="baud rate")
-    ap.add_argument("--demo", action="store_true", help="run with synthetic data")
-    ap.add_argument("--max-range", type=float, default=12.0, help="display range in meters")
+    ap.add_argument("--baud", type=int, default=DEFAULT_BAUD)
+    ap.add_argument("--demo", action="store_true", help="run with fake data")
+    ap.add_argument("--max-range", type=float, default=12.0, help="display range, meters")
     ap.add_argument("--width", type=int, default=900)
     ap.add_argument("--height", type=int, default=900)
-    ap.add_argument("--fps", type=int, default=60, help="render frame cap")
+    ap.add_argument("--fps", type=int, default=60)
     args = ap.parse_args()
 
     if not args.demo and not args.port:
-        ap.error("specify --port <device> or use --demo")
+        ap.error("pass --port <device> or --demo")
 
     field = ScanField()
     source = DemoSource(field) if args.demo else SerialSource(field, args.port, args.baud)

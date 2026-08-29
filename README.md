@@ -1,39 +1,42 @@
 # LiDARresearch
 
-Real-time point-cloud field viewer for the **LDROBOT D800 (STL-27L)** 360° dToF LiDAR.
+Live viewer for the LDROBOT D800 (STL-27L) 360 lidar. It reads the sensor's
+serial packets and draws the scan top-down. Only needs pyserial and pygame.
 
-Dark-themed and lightweight — the only dependencies are `pyserial` and `pygame`.
-It parses the standard LDROBOT LD-series UART packet format (47-byte packets,
-header `0x54 0x2C`, 12 points/packet, CRC-8 poly `0x4D`) and renders a live
-top-down scan field.
+## Setup
 
-## Install
-
-```bash
+```
 pip install -r requirements.txt
 ```
 
-## Run
+## Running
 
-```bash
-# real device (D800/STL-27L default baud is 921600)
+```
 python lidar_viewer.py --port /dev/ttyUSB0
 python lidar_viewer.py --port COM5 --baud 921600
+```
 
-# no hardware — synthetic room to try the UI
+The D800 runs at 921600 baud by default. If you get no points try 230400.
+
+No sensor handy? Run the fake room:
+
+```
 python lidar_viewer.py --demo
 ```
 
-Useful flags: `--max-range <meters>` (display range), `--width/--height`, `--fps`.
+Other flags: `--max-range` (display range in meters), `--width`, `--height`, `--fps`.
 
-## Controls
+## Keys
 
-| key / input        | action                                   |
-| ------------------ | ---------------------------------------- |
-| mouse wheel / `+` `-` | zoom                                  |
-| left-drag / arrows | pan                                      |
-| `C`                | cycle color mode (distance / intensity / mono) |
-| `G`                | toggle range-ring grid                   |
-| `P`                | pause                                    |
-| `R`                | reset view                               |
-| `ESC` / `Q`        | quit                                     |
+- wheel or +/- : zoom
+- drag or arrows : pan
+- C : color mode (distance / intensity / mono)
+- G : grid on/off
+- P : pause
+- R : reset view
+- Q or Esc : quit
+
+## Packet format
+
+Standard LDROBOT LD-series frame: 47 bytes, starts with `0x54 0x2C`, 12 points
+per packet, crc8 (poly 0x4D) on the last byte.
